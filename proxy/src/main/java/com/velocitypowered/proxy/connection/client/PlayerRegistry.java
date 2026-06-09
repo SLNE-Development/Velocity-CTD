@@ -20,6 +20,7 @@ package com.velocitypowered.proxy.connection.client;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.failedFuture;
 
+import com.velocityctd.proxy.redis.VelocityRedis;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.DisconnectEvent.LoginStatus;
 import com.velocitypowered.proxy.VelocityServer;
@@ -283,6 +284,8 @@ public final class PlayerRegistry {
       return completedFuture(null);
     }
 
+    removeRedisPlayerEntryBeforeDisconnectEvent(player, label);
+
     DisconnectEvent event = new DisconnectEvent(player, status);
     return server.getEventManager().fire(event)
         .completeOnTimeout(event, DISCONNECT_EVENT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -293,6 +296,29 @@ public final class PlayerRegistry {
           runCleanup(player, ex, label);
           return null;
         });
+  }
+
+  /**
+   * Removes the Redis player depot entry before firing {@link DisconnectEvent}. This keeps
+   * cross-proxy reconnects from being blocked by a stale player entry while plugins are still
+   * handling DisconnectEvent. The normal {@link ConnectedPlayer#disconnected()} cleanup remains
+   * in place and will no-op if the entry has already been removed.
+   */
+  private void removeRedisPlayerEntryBeforeDisconnectEvent(ConnectedPlayer player, String label) {
+    if (!server.getConfiguration().getRedis().isEnabled()) {
+      return;
+    }
+
+    VelocityRedis redis = server.getRedis();
+    if (redis == null || redis.isShutdown()) {
+      return;
+    }
+
+    try {
+      redis.getPlayerService().onPlayerDisconnect(player);
+    } catch (Throwable t) {
+      LOGGER.error("Exception during early Redis player cleanup for {} {}", label, player, t);
+    }
   }
 
   /**
