@@ -21,7 +21,6 @@ import com.velocityctd.api.queue.Queue;
 import com.velocityctd.api.queue.QueueEntryData;
 import com.velocityctd.api.queue.QueueState;
 import com.velocityctd.api.queue.ServerStatus;
-import com.velocityctd.proxy.queue.redis.depot.VelocityQueueDepotEntry;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
@@ -198,8 +197,7 @@ public abstract class VelocityQueue<E extends VelocityQueueEntry> implements Que
   }
 
   /**
-   * Returns the raw internal list. Used by
-   * {@link VelocityQueueDepotEntry} for snapshotting.
+   * Returns a snapshot of the internal player list.
    */
   @ApiStatus.Internal
   public List<E> getInternalEntries() {

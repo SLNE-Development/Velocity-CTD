@@ -33,13 +33,16 @@ import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.connection.util.ConnectionMessages;
 import com.velocitypowered.proxy.connection.util.ConnectionRequestResults;
 import com.velocitypowered.proxy.connection.util.ConnectionRequestResults.Impl;
+import com.velocitypowered.proxy.network.Connections;
 import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.packet.DisconnectPacket;
 import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
 import com.velocitypowered.proxy.protocol.packet.KeepAlivePacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 import com.velocitypowered.proxy.server.VelocityRegisteredServer;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -93,10 +96,10 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(JoinGamePacket packet) {
-    MinecraftConnection smc = serverConn.ensureConnected();
-    VelocityRegisteredServer previousServer = serverConn.getPreviousServer().orElse(null);
-    ConnectedPlayer player = serverConn.getPlayer();
-    VelocityServerConnection existingConnection = player.getConnectedServer();
+    final MinecraftConnection smc = serverConn.ensureConnected();
+    final VelocityRegisteredServer previousServer = serverConn.getPreviousServer().orElse(null);
+    final ConnectedPlayer player = serverConn.getPlayer();
+    final VelocityServerConnection existingConnection = player.getConnectedServer();
 
     if (existingConnection != null) {
       // Shut down the existing server connection.
@@ -109,6 +112,9 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
 
     // Reset Tablist header and footer to prevent desync
     player.clearPlayerListHeaderAndFooter();
+
+    // Override online mode
+    packet.setOnlineMode(player.isOnlineMode());
 
     // The goods are in hand! We got JoinGame. Let's transition completely to the new state.
     smc.setAutoReading(false);
@@ -136,6 +142,15 @@ public class TransitionSessionHandler implements MinecraftSessionHandler {
           // Set the new play session handler for the server. We will have nothing more to do
           // with this connection once this task finishes up.
           smc.setActiveSessionHandler(StateRegistry.PLAY, new BackendPlaySessionHandler(server, serverConn));
+
+          // The login/configuration sequence is complete: swap the short login timeout that
+          // BackendChannelInitializer installed for the regular in-play read-timeout, so a healthy
+          // but momentarily idle backend isn't dropped (issue GemstoneGG#938).
+          final var backendPipeline = smc.getChannel().pipeline();
+          if (backendPipeline.context(Connections.READ_TIMEOUT) != null) {
+            backendPipeline.replace(Connections.READ_TIMEOUT, Connections.READ_TIMEOUT,
+                new ReadTimeoutHandler(server.getConfiguration().getReadTimeout(), TimeUnit.MILLISECONDS));
+          }
 
           // Now set the connected server.
           serverConn.getPlayer().setConnectedServer(serverConn);
