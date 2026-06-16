@@ -1176,6 +1176,17 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
     return playerRegistry.registerConnection(connection);
   }
 
+  /**
+   * Returns the metrics session ID for this proxy, generating one if none is currently active. The
+   * ID is shared by every player connected during a populated period and is regenerated once the
+   * proxy empties.
+   *
+   * @return the current session ID
+   */
+  public UUID getSessionId() {
+    return playerRegistry.getSessionId();
+  }
+
   @Override
   public Optional<ConnectedPlayer> getPlayer(String username) {
     Preconditions.checkNotNull(username, "username");
