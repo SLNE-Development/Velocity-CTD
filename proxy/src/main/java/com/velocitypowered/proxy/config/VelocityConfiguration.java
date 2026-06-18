@@ -50,6 +50,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -62,7 +63,6 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
@@ -76,15 +76,13 @@ public final class VelocityConfiguration implements ProxyConfig {
   private static final String UNBOUNDED = "UNBOUNDED";
 
   // Cached fields
-  private @MonotonicNonNull Component motdAsComponent;
-  private List<@MonotonicNonNull Component> motdHoverComponents;
   private @Nullable Favicon favicon;
 
   @Expose
   private final String bind;
 
   @Expose
-  private final String motd;
+  private final List<String> motd;
 
   @Expose
   private final List<String> motdHover;
@@ -114,9 +112,6 @@ public final class VelocityConfiguration implements ProxyConfig {
 
   @Expose
   private final PingPassthroughMode pingPassthrough;
-
-  @Expose
-  private final boolean samplePlayersInPing;
 
   @Expose
   private final Servers servers;
@@ -255,13 +250,13 @@ public final class VelocityConfiguration implements ProxyConfig {
   @Expose
   private final Map<String, Integer> playerCaps;
 
-  private VelocityConfiguration(String bind, String motd, List<String> motdHover,
+  private VelocityConfiguration(String bind, List<String> motd, List<String> motdHover,
                                 int showMaxPlayers, boolean onlineMode,
                                 boolean preventClientProxyConnections, boolean announceForge,
                                 PlayerInfoForwarding playerInfoForwardingMode, byte[] forwardingSecret,
                                 boolean kickExistingPlayers, boolean kickExistingPlayersCheckIp,
                                 PingPassthroughMode pingPassthrough,
-                                boolean samplePlayersInPing, boolean enablePlayerAddressLogging,
+                                boolean enablePlayerAddressLogging,
                                 Servers servers, ForcedHosts forcedHosts,
                                 Map<String, List<String>> commandAliases,
                                 Map<String, List<String>> proxyCommandAliases,
@@ -288,7 +283,6 @@ public final class VelocityConfiguration implements ProxyConfig {
     this.kickExistingPlayers = kickExistingPlayers;
     this.kickExistingPlayersCheckIp = kickExistingPlayersCheckIp;
     this.pingPassthrough = pingPassthrough;
-    this.samplePlayersInPing = samplePlayersInPing;
     this.enablePlayerAddressLogging = enablePlayerAddressLogging;
     this.servers = servers;
     this.forcedHosts = forcedHosts;
@@ -500,26 +494,22 @@ public final class VelocityConfiguration implements ProxyConfig {
 
   @Override
   public Component getMotd() {
-    if (motdAsComponent == null) {
-      motdAsComponent = ComponentUtils.parse(motd);
-    }
+    return ComponentUtils.parse(String.join("\n", motd));
+  }
 
-    return motdAsComponent;
+  public List<String> getMotdLines() {
+    return motd;
   }
 
   @Override
   public List<Component> getMotdHover() {
-    if (motdHoverComponents == null) {
-      motdHoverComponents = motdHover.stream()
-          // Fix for Fast Server Pings < 1.0.8 showing "Anonymous Players" on an empty line.
-          // See https://github.com/vansencool/FastServerPings/issues/8
-          // May be removed after a while.
-          .map(s -> s.isEmpty() ? " " : s)
-          .map(ComponentUtils::parse)
-          .toList();
-    }
+    return motdHover.stream()
+        .map(ComponentUtils::parse)
+        .toList();
+  }
 
-    return motdHoverComponents;
+  public List<String> getMotdHoverLines() {
+    return motdHover;
   }
 
   @Override
@@ -820,10 +810,6 @@ public final class VelocityConfiguration implements ProxyConfig {
     return pingPassthrough;
   }
 
-  public boolean getSamplePlayersInPing() {
-    return samplePlayersInPing;
-  }
-
   public boolean isPlayerAddressLoggingEnabled() {
     return enablePlayerAddressLogging;
   }
@@ -904,6 +890,32 @@ public final class VelocityConfiguration implements ProxyConfig {
    */
   public String getBackendBrandCustom() {
     return advanced.getBackendBrandCustom();
+  }
+
+  /**
+   * Returns whether a client's request to be anonymized in the server list ping should be ignored.
+   *
+   * <p>When a player disables "Allow Server Listings" in their client options, they are normally
+   * shown as "Anonymous Player" in the {@code {players}} sample. When this returns {@code true},
+   * their real username is shown regardless.
+   *
+   * @return {@code true} if the client's anonymization request should be ignored
+   */
+  public boolean isIgnoreAnonymousPlayerRequest() {
+    return advanced.isIgnoreAnonymousPlayerRequest();
+  }
+
+  /**
+   * Returns whether the {@code {players}} sample of the motd, motd hover and fallback version ping
+   * should draw from a single shared pool.
+   *
+   * <p>When {@code true}, a player never appears more than once across those sections. When
+   * {@code false}, each section samples players independently.
+   *
+   * @return {@code true} if a single pool is shared across all ping sections
+   */
+  public boolean isPoolPlayersAcrossSections() {
+    return advanced.isPoolPlayersAcrossSections();
   }
 
   /**
@@ -1023,7 +1035,6 @@ public final class VelocityConfiguration implements ProxyConfig {
         .add("kickExistingPlayers", kickExistingPlayers)
         .add("kickExistingPlayersCheckIp", kickExistingPlayersCheckIp)
         .add("pingPassthrough", pingPassthrough)
-        .add("samplePlayersInPing", samplePlayersInPing)
         .add("servers", servers)
         .add("forcedHosts", forcedHosts)
         .add("commands", commands)
@@ -1138,8 +1149,19 @@ public final class VelocityConfiguration implements ProxyConfig {
       }
 
       byte[] forwardingSecret = forwardingSecretString.getBytes(StandardCharsets.UTF_8);
-      String motd = config.getOrElse("motd", "<#09add3>A Velocity Server");
-      List<String> motdHover = config.getOrElse("motd-hover", new ArrayList<>());
+
+      Object rawMotd = config.get("motd");
+      List<String> motd;
+      if (rawMotd instanceof String) {
+        motd = Collections.singletonList((String) rawMotd);
+      } else if (rawMotd instanceof List) {
+        motd = ImmutableList.copyOf((List<String>) rawMotd);
+      } else {
+        motd = Collections.emptyList();
+      }
+
+      List<String> motdHover = ImmutableList.copyOf(
+          config.getOrElse("motd-hover", new ArrayList<>()));
 
       // Read the rest of the config
       CommentedConfig serversConfig = config.get("servers");
@@ -1157,7 +1179,6 @@ public final class VelocityConfiguration implements ProxyConfig {
       CommentedConfig playerCapsConfig = config.get("playercaps");
       PlayerInfoForwarding forwardingMode = config.getEnumOrElse("player-info-forwarding-mode", PlayerInfoForwarding.NONE);
       PingPassthroughMode pingPassthroughMode = config.getEnumOrElse("ping-passthrough", PingPassthroughMode.DISABLED);
-      boolean samplePlayersInPing = config.getOrElse("sample-players-in-ping", false);
       String bind = config.getOrElse("bind", "0.0.0.0:25565");
       int maxPlayers = config.getIntOrElse("show-max-players", 500);
       boolean onlineMode = config.getOrElse("online-mode", true);
@@ -1267,7 +1288,6 @@ public final class VelocityConfiguration implements ProxyConfig {
           kickExisting,
           kickExistingCheckIp,
           pingPassthroughMode,
-          samplePlayersInPing,
           enablePlayerAddressLogging,
           new Servers(serversConfig),
           new ForcedHosts(forcedHostsConfig),
@@ -2051,22 +2071,10 @@ public final class VelocityConfiguration implements ProxyConfig {
     private String serverBrand = "{backend-brand} ({proxy-brand})";
 
     /**
-     * Legacy-formatted string of {@link #serverBrand}, generated at runtime.
-     * Not {@code @Expose}d to the dump: it is a derived value, not a configuration option.
-     */
-    private String serverBrandAsString;
-
-    /**
      * The version string shown in the ping response when a backend is unavailable.
      */
     @Expose
     private String fallbackVersionPing = "{proxy-brand} {protocol-min}-{protocol-max}";
-
-    /**
-     * Legacy-formatted version of {@link #fallbackVersionPing}, generated at runtime.
-     * Not {@code @Expose}d to the dump: it is a derived value, not a configuration option.
-     */
-    private String fallbackVersionPingAsString;
 
     /**
      * Whether to always display the fallback version in ping, even if backends respond normally.
@@ -2085,6 +2093,23 @@ public final class VelocityConfiguration implements ProxyConfig {
      */
     @Expose
     private String backendBrandCustom = "Paper";
+
+    /**
+     * Whether to ignore a client's request to be anonymized in the server list ping. When a player
+     * disables "Allow Server Listings" in their client options, they normally show up as
+     * "Anonymous Player" in the {@code {players}} sample. Enabling this displays their real username
+     * regardless.
+     */
+    @Expose
+    private boolean ignoreAnonymousPlayerRequest = false;
+
+    /**
+     * Whether the {@code {players}} sample of the motd, motd hover and fallback version ping should
+     * draw from a single shared pool. When enabled, a player never appears more than once across
+     * those sections; when disabled, each section samples independently.
+     */
+    @Expose
+    private boolean poolPlayersAcrossSections = false;
 
     private Advanced() {
     }
@@ -2123,17 +2148,16 @@ public final class VelocityConfiguration implements ProxyConfig {
         this.seamlessTransferServers = parseServerNameSet(
             config.get("seamless-transfer-servers"),
             "seamless-transfer-servers");
-        this.serverBrand = config.getOrElse("server-brand", "{backend-brand} ({proxy-brand})");
-        this.fallbackVersionPing = config.getOrElse("fallback-version-ping", "{proxy-brand} {protocol-min}-{protocol-max}");
+        this.serverBrand = reserializeToLegacy(
+            config.getOrElse("server-brand", "{backend-brand} ({proxy-brand})"));
+        this.fallbackVersionPing = reserializeToLegacy(
+            config.getOrElse("fallback-version-ping", "{proxy-brand} {protocol-min}-{protocol-max}"));
         this.alwaysFallBackPing = config.getOrElse("always-fallback-ping", false);
         this.proxyBrandCustom = config.getOrElse("custom-brand-proxy", "Velocity-CTD");
         this.backendBrandCustom = config.getOrElse("custom-brand-backend", "Paper");
+        this.ignoreAnonymousPlayerRequest = config.getOrElse("ignore-anonymous-player-request", false);
+        this.poolPlayersAcrossSections = config.getOrElse("pool-players-across-sections", false);
       }
-
-      this.serverBrandAsString = LegacyComponentSerializer.legacySection()
-          .serialize(ComponentUtils.parse(this.serverBrand));
-      this.fallbackVersionPingAsString = LegacyComponentSerializer.legacySection()
-          .serialize(ComponentUtils.parse(this.fallbackVersionPing));
     }
 
     public int getCompressionThreshold() {
@@ -2193,7 +2217,7 @@ public final class VelocityConfiguration implements ProxyConfig {
     }
 
     public boolean isAcceptTransfers() {
-      return this.acceptTransfers;
+      return acceptTransfers;
     }
 
     public boolean isEnableReusePort() {
@@ -2237,23 +2261,31 @@ public final class VelocityConfiguration implements ProxyConfig {
     }
 
     public String getServerBrand() {
-      return this.serverBrandAsString;
+      return serverBrand;
     }
 
     public String getFallbackVersionPing() {
-      return this.fallbackVersionPingAsString;
+      return fallbackVersionPing;
     }
 
     public boolean isAlwaysFallBackPing() {
-      return this.alwaysFallBackPing;
+      return alwaysFallBackPing;
     }
 
     public String getProxyBrandCustom() {
-      return this.proxyBrandCustom;
+      return proxyBrandCustom;
     }
 
     public String getBackendBrandCustom() {
-      return this.backendBrandCustom;
+      return backendBrandCustom;
+    }
+
+    public boolean isIgnoreAnonymousPlayerRequest() {
+      return ignoreAnonymousPlayerRequest;
+    }
+
+    public boolean isPoolPlayersAcrossSections() {
+      return poolPlayersAcrossSections;
     }
 
     @Override
@@ -2287,7 +2319,14 @@ public final class VelocityConfiguration implements ProxyConfig {
           .add("alwaysFallBackPing", alwaysFallBackPing)
           .add("proxyBrandCustom", proxyBrandCustom)
           .add("backendBrandCustom", backendBrandCustom)
+          .add("ignoreAnonymousPlayerRequest", ignoreAnonymousPlayerRequest)
+          .add("poolPlayersAcrossSections", poolPlayersAcrossSections)
           .toString();
+    }
+
+    private static String reserializeToLegacy(String input) {
+      Component deserialized = ComponentUtils.parse(input);
+      return LegacyComponentSerializer.legacySection().serialize(deserialized);
     }
   }
 
@@ -2611,6 +2650,26 @@ public final class VelocityConfiguration implements ProxyConfig {
     private int maxSendRetries = 10;
 
     /**
+     * If true, players gain extra effective priority the longer they wait, so low-priority
+     * players cannot be starved forever by a stream of higher-priority joiners.
+     */
+    @Expose
+    private boolean dynamicPriority;
+
+    /**
+     * Minutes a player must wait in a queue to gain +1 effective priority.
+     */
+    @Expose
+    private int minutesPerPriorityIncrease = 30;
+
+    /**
+     * The cap on effective priority gained from waiting. Players whose configured priority
+     * is already at or above this value are unaffected by dynamic priority.
+     */
+    @Expose
+    private int maxDynamicPriority = 99;
+
+    /**
      * If true, removes the player from the queue after successfully switching servers.
      */
     @Expose
@@ -2690,6 +2749,14 @@ public final class VelocityConfiguration implements ProxyConfig {
       this.messageDelay = config.getOrElse("message-delay", 1.0);
       this.backendPingInterval = config.getOrElse("backend-ping-interval", 5.0);
       this.maxSendRetries = config.getOrElse("max-send-retries", 10);
+      this.dynamicPriority = config.getOrElse("dynamic-priority", false);
+      this.minutesPerPriorityIncrease = config.getOrElse("minutes-per-priority-increase", 30);
+      this.maxDynamicPriority = config.getOrElse("max-dynamic-priority", 99);
+
+      if (this.minutesPerPriorityIncrease < 1) {
+        LOGGER.warn("'minutes-per-priority-increase' must be at least 1; using 1.");
+        this.minutesPerPriorityIncrease = 1;
+      }
       this.removePlayerOnServerSwitch = config.getOrElse("remove-player-on-server-switch", true);
       this.allowPausedQueueJoining = config.getOrElse("allow-paused-queue-joining", false);
       this.queueOnShutdown = config.getOrElse("queue-on-shutdown", true);
@@ -2795,6 +2862,18 @@ public final class VelocityConfiguration implements ProxyConfig {
      */
     public int getMaxSendRetries() {
       return maxSendRetries;
+    }
+
+    public boolean isDynamicPriority() {
+      return dynamicPriority;
+    }
+
+    public int getMinutesPerPriorityIncrease() {
+      return minutesPerPriorityIncrease;
+    }
+
+    public int getMaxDynamicPriority() {
+      return maxDynamicPriority;
     }
 
     /**

@@ -26,7 +26,33 @@ public class CtdConfigMigrations {
 
   public static List<ConfigurationMigration> createCtdMigrations() {
     return List.of(
+        new CtdMotdHoverMigration(),
+
         // root
+        migration(
+            "Shown when hovering over the player count in the server list. Accepts a list of lines, and\n"
+                + " supports the same placeholders as \"fallback-version-ping\" plus the \"{players}\" placeholder.\n"
+                + "\n"
+                + " \"{players}\" lists online players. By default it shows a random selection, which is the Notchian\n"
+                + " (vanilla) behavior. Setting motd-hover = [\"{players}\"] reproduces the vanilla player tooltip.\n"
+                + " It accepts optional arguments written as \"{players:arg=value:arg2=value}\":\n"
+                + " - max:        maximum number of players to list.\n"
+                + " - maxPerLine: maximum number of players listed per line.\n"
+                + " - ordering:   how players are picked and ordered. One of:\n"
+                + "   - RANDOM:                a random selection (Notchian behavior).\n"
+                + "   - ALPHABETICAL:          sorted A-Z by name.\n"
+                + "   - ALPHABETICAL_REVERSED: sorted Z-A by name.\n"
+                + "   - LAST_JOINED:           most recently joined players first.\n"
+                + "   - FIRST_JOINED:          longest-connected players first.\n"
+                + " - empty:      text shown when no players are online.\n"
+                + " - prefix:     text inserted before each player name.\n"
+                + " - separator:  text inserted between player names (trimmed at the end of each line).\n"
+                + " Example: \"{players:max=10:maxPerLine=2:ordering=ALPHABETICAL:separator=<gray>, }\"",
+            "motd-hover",
+            List.of(
+                "<gray>Players online: <white>{player-count}</white>/<white>{max-players}</white></gray>",
+                "{players}")
+        ),
         migration(
             "Whether chat signing should be enforced. If disabled, backend servers MUST disable chat signing.",
             "enforce-chat-signing",
@@ -148,9 +174,21 @@ public class CtdConfigMigrations {
             "{backend-brand} ({proxy-brand})"
         ),
         migration(
+            "Replaces what is returned for both the server brand and fallback version pinger.",
+            "advanced.custom-brand-proxy",
+            "Velocity-CTD"
+        ),
+        migration(
+            "Replaces what is returned as the server brand for the user's client.",
+            "advanced.custom-brand-backend",
+            "Paper"
+        ),
+        migration(
             "Modifies the brand and server version that displays in the multiplayer menu and status pingers.\n"
                 + " Supports placeholders: {protocol-min}, {protocol-max}, {protocol}, {proxy-brand},\n"
-                + " {proxy-brand-custom}, {proxy-version}, {proxy-vendor}, {player-count}, {max-players}.",
+                + " {proxy-brand-custom}, {proxy-version}, {proxy-vendor}, {player-count}, {max-players}.\n"
+                + " These placeholders are also available in \"motd\" and \"motd-hover\", and the\n"
+                + " \"{players}\" placeholder (documented under \"motd-hover\") may be used here as well.",
             "advanced.fallback-version-ping",
             "{proxy-brand} {protocol-min}-{protocol-max}"
         ),
@@ -162,14 +200,19 @@ public class CtdConfigMigrations {
             false
         ),
         migration(
-            "Replaces what is returned for both the server brand and fallback version pinger.",
-            "advanced.custom-brand-proxy",
-            "Velocity-CTD"
+            "When a player disables \"Allow Server Listings\" in their client options, they are shown as\n"
+                + " \"Anonymous Player\" in the {players} sample of the server list ping. Set this to true to ignore\n"
+                + " that request and always show their real username.",
+            "advanced.ignore-anonymous-player-request",
+            false
         ),
         migration(
-            "Replaces what is returned as the server brand for the user's client.",
-            "advanced.custom-brand-backend",
-            "Paper"
+            "Whether the {players} sample of the motd, motd-hover and fallback-version-ping should draw from a\n"
+                + " single shared pool. When true, a player never appears more than once across those three sections.\n"
+                + " When false (default), each section samples players independently and the same player may appear in\n"
+                + " more than one section.",
+            "advanced.pool-players-across-sections",
+            false
         ),
 
         // [redis]
@@ -261,6 +304,26 @@ public class CtdConfigMigrations {
             "The number of tries a user should be sent to a server before being removed from the queue.",
             "queue.max-send-retries",
             10
+        ),
+        migration(
+            "Whether players slowly gain extra \"effective\" priority the longer they wait in a queue,\n"
+                + " so that low-priority players cannot be starved forever by higher-priority joiners.\n"
+                + " Only affects the order players are sent in; the configured velocity.queue.priority.<n>\n"
+                + " permission value is never changed.",
+            "queue.dynamic-priority",
+            false
+        ),
+        migration(
+            "How many minutes a player must wait in a queue to gain +1 effective priority.",
+            "queue.minutes-per-priority-increase",
+            30
+        ),
+        migration(
+            "The cap on effective priority gained from waiting. Players whose configured priority is\n"
+                + " already at or above this value always keep their configured priority, so staff with e.g.\n"
+                + " priority 100 stay ahead of everyone aged up to 99.",
+            "queue.max-dynamic-priority",
+            99
         ),
         migration(
             "Whether the player should be removed from their previous queue when switching servers.",
