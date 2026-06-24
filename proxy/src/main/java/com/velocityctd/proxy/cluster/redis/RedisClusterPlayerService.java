@@ -32,12 +32,16 @@ import java.util.Collection;
 import java.util.Optional;
 import java.util.UUID;
 import net.kyori.adventure.text.Component;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.Nullable;
 
 /**
  * Redis-backed implementation of {@link VelocityClusterPlayerService}.
  */
 public final class RedisClusterPlayerService implements VelocityClusterPlayerService {
+
+  private static final Logger LOGGER = LogManager.getLogger(RedisClusterPlayerService.class);
 
   private final VelocityServer server;
   private final VelocityRedis redis;
@@ -101,11 +105,22 @@ public final class RedisClusterPlayerService implements VelocityClusterPlayerSer
 
   @Override
   public boolean onPlayerConnect(ConnectedPlayer player) {
-    return playerService().onPlayerConnect(player);
+    LOGGER.info("[REDIS-PLAYER-DEBUG] stage=RedisClusterPlayerService.onPlayerConnect action=ENTER "
+        + "user={} uuid={} localProxyId={} thread={}",
+        player.getUsername(), player.getUniqueId(), redis.getProxyId(), Thread.currentThread().getName());
+    boolean allowed = playerService().onPlayerConnect(player);
+    LOGGER.info("[REDIS-PLAYER-DEBUG] stage=RedisClusterPlayerService.onPlayerConnect action=EXIT "
+        + "allowed={} user={} uuid={} localProxyId={} thread={}",
+        allowed, player.getUsername(), player.getUniqueId(), redis.getProxyId(),
+        Thread.currentThread().getName());
+    return allowed;
   }
 
   @Override
   public void onPlayerDisconnect(ConnectedPlayer player) {
+    LOGGER.info("[REDIS-PLAYER-DEBUG] stage=RedisClusterPlayerService.onPlayerDisconnect action=ENTER "
+        + "user={} uuid={} localProxyId={} thread={}",
+        player.getUsername(), player.getUniqueId(), redis.getProxyId(), Thread.currentThread().getName());
     playerService().onPlayerDisconnect(player);
 
     if (server.isQueueEnabled()) {
@@ -117,6 +132,10 @@ public final class RedisClusterPlayerService implements VelocityClusterPlayerSer
         server.getRedis().publish(new VelocityBackendLeave(serverName, System.currentTimeMillis()));
       }
     }
+
+    LOGGER.info("[REDIS-PLAYER-DEBUG] stage=RedisClusterPlayerService.onPlayerDisconnect action=EXIT "
+        + "user={} uuid={} localProxyId={} thread={}",
+        player.getUsername(), player.getUniqueId(), redis.getProxyId(), Thread.currentThread().getName());
   }
 
   @Override

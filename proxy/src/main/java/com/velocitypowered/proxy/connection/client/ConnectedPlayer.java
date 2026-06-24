@@ -382,12 +382,36 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
     }
 
     if (this.fullyConnected) {
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=ConnectedPlayer.disconnected action=RUN_CLUSTER_DISCONNECT_CLEANUP "
+          + redisDebugState());
       this.server.getClusterPlayerService().onPlayerDisconnect(this);
 
       if (this.server.isQueueEnabled()) {
         this.server.getQueueManager().onLocalPlayerDisconnect(this);
       }
+    } else {
+      // Connection was registered but never reached fullyConnected (e.g. rejected by a remote
+      // proxy during LoginEvent). Skipping cleanup avoids removing a Redis entry this proxy
+      // does not own.
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=ConnectedPlayer.disconnected "
+          + "action=SKIP_CLUSTER_DISCONNECT_CLEANUP reason=NOT_FULLY_CONNECTED " + redisDebugState());
     }
+  }
+
+  /**
+   * Builds a readable one-line {@code key=value} snapshot of this player's identity, connection
+   * liveness and login state for the {@code [REDIS-PLAYER-DEBUG]} diagnostics.
+   *
+   * @return a space-separated description of the current player state
+   */
+  private String redisDebugState() {
+    VelocityServerConnection current = this.connectedServer;
+    String serverName = current == null ? null : current.getServerInfo().getName();
+    return String.format(
+        "user=%s uuid=%s active=%s closed=%s fullyConnected=%s loginCompleted=%s "
+            + "loginEventFired=%s currentServer=%s thread=%s",
+        getUsername(), getUniqueId(), isActive(), connection.isClosed(), fullyConnected,
+        isLoginCompleted(), isLoginEventFired(), serverName, Thread.currentThread().getName());
   }
 
   public ChatBuilderFactory getChatBuilderFactory() {
@@ -1600,6 +1624,18 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
       buf.release();
       return false;
     }
+  }
+
+  /**
+   * Whether this player has fully completed the login handshake (the login success packet has been
+   * sent and {@link #fullyConnected()} has run). Exposed for cross-package diagnostics, e.g. the
+   * Redis player depot uses it to tell whether a connection that produced a Redis entry had
+   * actually reached the fully-connected state.
+   *
+   * @return {@code true} once the player is fully connected to this proxy
+   */
+  public boolean isFullyConnected() {
+    return this.fullyConnected;
   }
 
   @Override

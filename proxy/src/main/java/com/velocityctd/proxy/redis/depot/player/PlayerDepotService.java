@@ -29,6 +29,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import net.kyori.adventure.text.Component;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -38,6 +40,12 @@ import org.jetbrains.annotations.Unmodifiable;
  * functionality to track certain information about a single player, or multiple players.
  */
 public final class PlayerDepotService extends AbstractDepotService<UUID, PlayerEntry> {
+
+  /**
+   * Diagnostic logger for the "already connected to a remote proxy" investigation. All lines use
+   * the shared {@code [REDIS-PLAYER-DEBUG]} prefix so they can be grepped as a single stream.
+   */
+  private static final Logger LOGGER = LogManager.getLogger(PlayerDepotService.class);
 
   /**
    * The Redis manager used to coordinate multi-proxy player synchronization.
@@ -111,26 +119,50 @@ public final class PlayerDepotService extends AbstractDepotService<UUID, PlayerE
    */
   public boolean onPlayerConnect(ConnectedPlayer player) {
     if (this.redis.isShutdown()) {
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerConnect decision=DENY_REDIS_SHUTDOWN "
+          + "localProxyId={} {}", this.redis.getProxyId(), describe(player));
       return false;
     }
 
-    if (this.depot.contains(player.getUniqueId())) {
-      if (this.server.getConfiguration().isKickExistingPlayers()) {
+    boolean contains = this.depot.contains(player.getUniqueId());
+    LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerConnect action=ENTRY "
+        + "localProxyId={} redisContainsUuid={} {}",
+        this.redis.getProxyId(), contains, describe(player));
+
+    if (contains) {
+      // Re-read once so the existing entry's owner/server can be logged for every branch below.
+      PlayerEntry existingEntry = this.depot.get(player.getUniqueId());
+      boolean kickExisting = this.server.getConfiguration().isKickExistingPlayers();
+      boolean sameProxy = existingEntry != null
+          && existingEntry.getProxyId().equalsIgnoreCase(this.redis.getProxyId());
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerConnect action=EXISTING_ENTRY "
+          + "localProxyId={} sameProxy={} kickExistingPlayers={} existing[{}] {}",
+          this.redis.getProxyId(), sameProxy, kickExisting, describe(existingEntry), describe(player));
+
+      if (kickExisting) {
         Component component = Component.translatable("multiplayer.disconnect.duplicate_login");
-        PlayerEntry existingEntry = this.depot.get(player.getUniqueId());
         // Only send a VelocityKick if the existing player is on a DIFFERENT proxy.
         // If they are on this proxy, registerConnection() already kicked them locally.
-        if (existingEntry != null && !existingEntry.getProxyId().equalsIgnoreCase(this.redis.getProxyId())) {
+        if (existingEntry != null && !sameProxy) {
+          LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerConnect decision=REMOTE_KICK_EXISTING "
+              + "localProxyId={} targetProxyId={} existing[{}] {}",
+              this.redis.getProxyId(), existingEntry.getProxyId(), describe(existingEntry), describe(player));
           this.redis.publish(new VelocityKick(player.getUniqueId(), component, existingEntry.getProxyId()));
         }
       } else {
         Component component = Component.translatable("velocity.error.already-connected-proxy.remote");
+        LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerConnect decision=DENY_ALREADY_CONNECTED "
+            + "localProxyId={} existing[{}] {}",
+            this.redis.getProxyId(), describe(existingEntry), describe(player));
         player.disconnect0(component, true);
         return false;
       }
     }
 
-    this.upsertPlayerEntry(player);
+    PlayerEntry written = this.upsertPlayerEntry(player);
+    LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerConnect decision=ALLOW_UPSERT "
+        + "localProxyId={} written[{}] {}",
+        this.redis.getProxyId(), describe(written), describe(player));
     return true;
   }
 
@@ -141,24 +173,46 @@ public final class PlayerDepotService extends AbstractDepotService<UUID, PlayerE
    */
   public void onPlayerDisconnect(ConnectedPlayer player) {
     if (this.redis.isShutdown()) {
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerDisconnect decision=SKIP_REDIS_SHUTDOWN {}",
+          describe(player));
       return;
     }
 
     PlayerEntry existing = this.depot.get(player.getUniqueId());
+    LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerDisconnect action=ENTRY "
+        + "localProxyId={} existing[{}] {}",
+        this.redis.getProxyId(), describe(existing), describe(player));
+
     if (existing == null) {
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerDisconnect decision=SKIP_NO_ENTRY "
+          + "localProxyId={} {}", this.redis.getProxyId(), describe(player));
       return;
     }
 
     if (!existing.getProxyId().equalsIgnoreCase(this.redis.getProxyId())) {
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerDisconnect decision=SKIP_DIFFERENT_PROXY "
+          + "localProxyId={} existing[{}] {}",
+          this.redis.getProxyId(), describe(existing), describe(player));
       return;
     }
 
     ConnectedPlayer currentPlayer = this.server.getPlayer(player.getUniqueId()).orElse(null);
     if (currentPlayer != null && currentPlayer != player) {
+      // The registry slot is now owned by a newer connection (fast reconnect / duplicate login).
+      // Removing here would delete the entry the new connection just wrote, so we skip.
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerDisconnect "
+          + "decision=SKIP_REPLACED_LOCAL_PLAYER localProxyId={} existing[{}] {}",
+          this.redis.getProxyId(), describe(existing), describe(player));
       return;
     }
 
+    LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerDisconnect action=BEFORE_REMOVE "
+        + "decision=REMOVE_DISCONNECT localProxyId={} existing[{}] {}",
+        this.redis.getProxyId(), describe(existing), describe(player));
     this.depot.remove(player.getUniqueId());
+    LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.onPlayerDisconnect action=AFTER_REMOVE "
+        + "decision=REMOVE_DISCONNECT localProxyId={} removedUuid={} removedUser={} thread={}",
+        this.redis.getProxyId(), player.getUniqueId(), player.getUsername(), Thread.currentThread().getName());
   }
 
   /**
@@ -281,12 +335,14 @@ public final class PlayerDepotService extends AbstractDepotService<UUID, PlayerE
    * it is updated with the latest details. If it doesn't exist, a new entry is created.
    *
    * @param player the {@link ConnectedPlayer} object representing the player for whom the entry is to be upserted; must not be null
+   * @return the {@link PlayerEntry} that was written to the depot
    */
-  public void upsertPlayerEntry(@NotNull ConnectedPlayer player) {
+  public PlayerEntry upsertPlayerEntry(@NotNull ConnectedPlayer player) {
     PlayerEntry playerEntry = new PlayerEntry(player, this.redis.getProxyId());
     playerEntry.setDepot(this.depot);
 
     this.depot.upsert(playerEntry);
+    return playerEntry;
   }
 
   /**
@@ -310,12 +366,19 @@ public final class PlayerDepotService extends AbstractDepotService<UUID, PlayerE
       return;
     }
 
+    // Only mutations are logged below; the common "nothing to do" pass stays silent so the
+    // 1Hz task does not spam the log. Note: getOnlinePlayers() returns players that are merely
+    // registered (login lock acquired) but not necessarily fullyConnected yet -- watch the
+    // local state in SYNC_UPSERT_MISSING_PLAYER for premature/stale Redis writes.
     for (ConnectedPlayer player : this.server.getOnlinePlayers()) {
       if (this.depot.contains(player.getUniqueId())) {
         continue;
       }
 
-      this.upsertPlayerEntry(player);
+      PlayerEntry written = this.upsertPlayerEntry(player);
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.syncPlayerEntries action=SYNC_UPSERT_MISSING_PLAYER "
+          + "localProxyId={} written[{}] {}",
+          this.redis.getProxyId(), describe(written), describe(player));
     }
 
     for (PlayerEntry playerEntry : this.depot.values()) {
@@ -327,7 +390,56 @@ public final class PlayerDepotService extends AbstractDepotService<UUID, PlayerE
         continue;
       }
 
+      LOGGER.info("[REDIS-PLAYER-DEBUG] stage=PlayerDepotService.syncPlayerEntries action=SYNC_REMOVE_STALE_PLAYER "
+          + "localProxyId={} removing[{}] thread={}",
+          this.redis.getProxyId(), describe(playerEntry), Thread.currentThread().getName());
       playerEntry.remove();
     }
+  }
+
+  /**
+   * Builds a readable one-line description of a live {@link ConnectedPlayer} for diagnostics,
+   * covering identity, connection liveness and the local login/connection state that determines
+   * whether this proxy should own a Redis entry for the player.
+   *
+   * @param player the player to describe
+   * @return a space-separated {@code key=value} description
+   */
+  private static String describe(@Nullable ConnectedPlayer player) {
+    if (player == null) {
+      return "player=null";
+    }
+
+    return String.format(
+        "user=%s uuid=%s active=%s closed=%s fullyConnected=%s currentServer=%s thread=%s",
+        player.getUsername(), player.getUniqueId(), player.isActive(),
+        player.getConnection().isClosed(), player.isFullyConnected(),
+        serverNameOf(player), Thread.currentThread().getName());
+  }
+
+  /**
+   * Builds a readable one-line description of a stored {@link PlayerEntry} for diagnostics,
+   * including which proxy currently claims ownership of the entry.
+   *
+   * @param entry the entry to describe, may be {@code null}
+   * @return a space-separated {@code key=value} description, or {@code "none"} when absent
+   */
+  private static String describe(@Nullable PlayerEntry entry) {
+    if (entry == null) {
+      return "none";
+    }
+
+    return String.format("entryUser=%s entryUuid=%s entryProxyId=%s entryServer=%s",
+        entry.getUsername(), entry.getUniqueId(), entry.getProxyId(), entry.getServerName());
+  }
+
+  /**
+   * Resolves the current backend server name of a player, if connected to one.
+   *
+   * @param player the player whose server name to resolve
+   * @return the backend server name, or {@code null} if the player is not on a server
+   */
+  private static @Nullable String serverNameOf(@NotNull ConnectedPlayer player) {
+    return player.getCurrentServer().map(server -> server.getServerInfo().getName()).orElse(null);
   }
 }

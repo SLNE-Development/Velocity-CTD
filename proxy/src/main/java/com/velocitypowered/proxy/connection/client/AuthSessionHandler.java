@@ -160,11 +160,17 @@ public class AuthSessionHandler implements MinecraftSessionHandler {
 
       return server.registerConnection(player).thenComposeAsync(registered -> {
         if (!registered) {
+          LOGGER.info("[REDIS-PLAYER-DEBUG] stage=AuthSessionHandler action=LOCAL_REGISTRATION_FAILED "
+              + "decision=DENY_DUPLICATE_LOCAL localProxyId={} {}",
+              server.getProxyId(), redisDebugState(player));
           player.disconnect0(
               Component.translatable("velocity.error.already-connected-proxy", NamedTextColor.RED),
               true);
           return CompletableFuture.completedFuture(null);
         }
+
+        LOGGER.info("[REDIS-PLAYER-DEBUG] stage=AuthSessionHandler action=LOCAL_REGISTRATION_SUCCESS "
+            + "localProxyId={} {}", server.getProxyId(), redisDebugState(player));
 
         if (server.getConfiguration().isLogPlayerConnections()) {
           LOGGER.info("{} has connected", player);
@@ -332,11 +338,23 @@ public class AuthSessionHandler implements MinecraftSessionHandler {
       if (reason.isPresent()) {
         player.disconnect0(reason.get(), true);
       } else {
-        if (!this.server.getClusterPlayerService().onPlayerConnect(player)) {
+        LOGGER.info("[REDIS-PLAYER-DEBUG] stage=AuthSessionHandler action=BEFORE_CLUSTER_ON_PLAYER_CONNECT "
+            + "localProxyId={} {}", server.getProxyId(), redisDebugState(player));
+        boolean allowed = this.server.getClusterPlayerService().onPlayerConnect(player);
+        LOGGER.info("[REDIS-PLAYER-DEBUG] stage=AuthSessionHandler action=AFTER_CLUSTER_ON_PLAYER_CONNECT "
+            + "allowed={} localProxyId={} {}", allowed, server.getProxyId(), redisDebugState(player));
+        if (!allowed) {
+          LOGGER.info("[REDIS-PLAYER-DEBUG] stage=AuthSessionHandler action=REJECTED_BY_CLUSTER "
+              + "reason=ALREADY_CONNECTED_REMOTE localProxyId={} {}",
+              server.getProxyId(), redisDebugState(player));
           return;
         }
 
+        LOGGER.info("[REDIS-PLAYER-DEBUG] stage=AuthSessionHandler action=BEFORE_FULLY_CONNECTED "
+            + "localProxyId={} {}", server.getProxyId(), redisDebugState(player));
         player.fullyConnected();
+        LOGGER.info("[REDIS-PLAYER-DEBUG] stage=AuthSessionHandler action=AFTER_FULLY_CONNECTED "
+            + "localProxyId={} {}", server.getProxyId(), redisDebugState(player));
 
         ServerLoginSuccessPacket success = new ServerLoginSuccessPacket();
         success.setUsername(player.getUsername());
@@ -400,6 +418,26 @@ public class AuthSessionHandler implements MinecraftSessionHandler {
     }
 
     this.inbound.cleanup();
+  }
+
+  /**
+   * Builds a readable one-line {@code key=value} snapshot of a player's identity, connection
+   * liveness and login state for the {@code [REDIS-PLAYER-DEBUG]} diagnostics. Used to correlate
+   * the local login flow with the Redis player-state writes/reads.
+   *
+   * @param player the player being authenticated
+   * @return a space-separated description of the current player state
+   */
+  private static String redisDebugState(ConnectedPlayer player) {
+    String serverName = player.getCurrentServer()
+        .map(server -> server.getServerInfo().getName())
+        .orElse(null);
+    return String.format(
+        "user=%s uuid=%s active=%s closed=%s fullyConnected=%s loginCompleted=%s "
+            + "loginEventFired=%s currentServer=%s thread=%s",
+        player.getUsername(), player.getUniqueId(), player.isActive(),
+        player.getConnection().isClosed(), player.isFullyConnected(), player.isLoginCompleted(),
+        player.isLoginEventFired(), serverName, Thread.currentThread().getName());
   }
 
   enum State {
