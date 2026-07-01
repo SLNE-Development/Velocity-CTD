@@ -127,6 +127,6 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
         body: This is a temporary build of the skip-client-reconfiguration branch.
         files: |
-          proxy/build/libs/velocity-ctd-fatjar-*-${{ steps.release_tag.outputs.build_nr }}.jar
-          bootstrap/build/libs/velocity-ctd-*-${{ steps.release_tag.outputs.build_nr }}.jar
+          proxy/build/libs/velocity-proxy-*.jar
+          bootstrap/build/libs/velocity-bootstrap-*.jar
         
