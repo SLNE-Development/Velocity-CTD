@@ -5,7 +5,7 @@ name: Java CI with Gradle
 on:
   push:
     branches:
-      - libdeflate
+      - feat/skip-client-reconfiguration
   pull_request:
   workflow_dispatch:
 
@@ -115,3 +115,18 @@ jobs:
         files: |
           proxy/build/libs/velocity-ctd-fatjar-*-${{ steps.release_tag.outputs.build_nr }}.jar
           bootstrap/build/libs/velocity-ctd-*-${{ steps.release_tag.outputs.build_nr }}.jar
+
+    - name: Upload Skip Client Reconfiguration
+      if: github.ref == 'refs/heads/feat/skip-client-reconfiguration'
+      continue-on-error: true
+      uses: softprops/action-gh-release@v3
+      with:
+        generate_release_notes: true
+        prerelease: true
+        name: 'skip-client-reconfiguration'
+        token: ${{ secrets.GITHUB_TOKEN }}
+        body: This is a temporary build of the skip-client-reconfiguration branch.
+        files: |
+          proxy/build/libs/velocity-ctd-fatjar-*-${{ steps.release_tag.outputs.build_nr }}.jar
+          bootstrap/build/libs/velocity-ctd-*-${{ steps.release_tag.outputs.build_nr }}.jar
+        
