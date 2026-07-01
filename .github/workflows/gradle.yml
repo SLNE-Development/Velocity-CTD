@@ -121,6 +121,7 @@ jobs:
       continue-on-error: true
       uses: softprops/action-gh-release@v3
       with:
+        tag_name: 'skip-client-reconfiguration'
         generate_release_notes: true
         prerelease: true
         name: 'skip-client-reconfiguration'
